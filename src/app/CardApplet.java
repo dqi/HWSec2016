@@ -32,12 +32,15 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	private static final byte INS_STORE_CARD_CERT = (byte)0x40;
 	
 	/* Issued */
-	private static final byte INS_WORK_WORK = (byte) 0x70; // Place holder
+	private static final byte INS_WORK_WORK = (byte)0x70; // Place holder
 	private static final byte INS_PIN_VERIFY = (byte)0x80;
 
 	// Errors go here
-	final static short SW_PIN_VERIFICATION_REQUIRED = 0x6301;
-	
+	private final static short SW_PIN_VERIFICATION_REQUIRED = 0x6301;
+	private final static short SW_WRONG_PIN_LENGTH = 0x6302;
+	private final static short SW_WRONG_PIN = 0x6303;
+
+
 	// Variables go here
 	
 	private static final byte STATE_INIT = (byte)0x00;
@@ -53,7 +56,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	RSAPublicKey pubKeyCard;
 
 	/** Key for decryption. */
-	RSAPrivateCrtKey privKeyCard;
+	RSAPrivateKey privKeyCard;
 	
 	/** Backend key for encryption */
 	RSAPublicKey pubKeyBackEnd;
@@ -64,9 +67,10 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	/** Pincode */
 	OwnerPIN pin;
 	/** maximum number of incorrect tries before the PIN is blocked TODO How many? */
-	final static byte PinTryLimit =(byte)0xff;
-	/** maximum size PIN */
-	final static byte MaxPinSize =(byte)0x04;
+	final static byte PinTryLimit =(byte)0x7f; // Careful this is a signed value and negative will prevent the applet from installing
+	/** maximum size PIN, in bytes */
+	final static byte MaxPinSize =(byte)0x02;
+
 	
 	/** Balance of the card, maximum of 32767 TODO: Higher */
 	short cardBalance;
@@ -93,7 +97,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		/** Transient array in RAM to use for 'things' (what? Maybe first byte: isAtThisStepOfMutualAuthProtocol */
 		tmp = JCSystem.makeTransientByteArray((short)256,JCSystem.CLEAR_ON_RESET);
 		/** Card will establish a session key, store here */
-		cipher = Cipher.getInstance(Cipher.ALG_RSA_PKCS1_OAEP,false);
+		//cipher = Cipher.getInstance(Cipher.ALG_RSA_PKCS1_OAEP,false);
 		
 		/** Things in EEPROM */
 		/** When the applet is installed the state is STATE_INIT */
@@ -102,7 +106,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		// TODO Discuss ECC for size
 		pubKeyCard = (RSAPublicKey)KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_PUBLIC, KeyBuilder.LENGTH_RSA_1024,false);
 		/** Cards own private key */
-		privKeyCard = (RSAPrivateCrtKey)KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_CRT_PRIVATE, KeyBuilder.LENGTH_RSA_1024,false);
+		privKeyCard = (RSAPrivateKey)KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_PRIVATE, KeyBuilder.LENGTH_RSA_1024,false);
 		/** Public key of the back end, this should eventually be in a X509 structure. */
 		pubKeyBackEnd = (RSAPublicKey)KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_PUBLIC, KeyBuilder.LENGTH_RSA_1024,false);
 		/** The revocation list */
@@ -167,7 +171,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 				break;
 			/** Set the pin */
 			case INS_PIN_SET:
-				setPin();
+				setPin(apdu);
 				break;
 			/** Issue the card, can not be undone */
 			case INS_ISSUE:
@@ -196,17 +200,34 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		 */
 		case STATE_ISSUED:
 			switch(ins) {
-				case INS_WORK_WORK:
-					if ( ! pin.isValidated()){ ISOException.throwIt(SW_PIN_VERIFICATION_REQUIRED); }
-					// else work_work();
-					break;
-				case INS_PIN_VERIFY:
-					// pin_verify();
-					break;
-				default:
-					ISOException.throwIt(SW_INS_NOT_SUPPORTED);
+			case INS_WORK_WORK: // 0x70 INS seem to behave strange...
+				if ( !pin.isValidated()){ ISOException.throwIt(SW_PIN_VERIFICATION_REQUIRED); }
+				// else work_work();
+				break;
+			case INS_PIN_VERIFY:
+				pin_verify(apdu);
+				break;
+			default:
+				ISOException.throwIt(SW_INS_NOT_SUPPORTED);
 			}
+			break;
 		}
+	}
+
+	private void pin_verify(APDU apdu) {
+		byte[] buffer = apdu.getBuffer();
+		// retrieve the PIN data to validate.
+		byte byteRead = (byte)(apdu.setIncomingAndReceive());
+		
+		// Die if PinSize is not correct
+		if (byteRead != MaxPinSize){
+			ISOException.throwIt(SW_WRONG_PIN_LENGTH);
+		}
+		// Set the pin to the value in the data field
+		if (pin.check(buffer, ISO7816.OFFSET_CDATA,byteRead)){
+			return;
+		}
+		ISOException.throwIt(SW_WRONG_PIN);
 	}
 
 	private void setID() {
@@ -225,8 +246,20 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	private void setCardCertificate() {
 		// TODO Auto-generated method stub
 	}
-
-	private void setPin() {
-		// TODO Auto-generated method stub
+	
+	// Could also be done at install-time
+	/** Sets the PIN code of a card */
+	private void setPin(APDU apdu) {
+		byte[] buffer = apdu.getBuffer();
+		// retrieve the PIN data.
+		byte byteRead = (byte)(apdu.setIncomingAndReceive());
+		
+		// Die if PinSize is not correct
+		if (byteRead != MaxPinSize){
+			ISOException.throwIt(SW_WRONG_PIN_LENGTH);
+		}
+		// Set the pin to the value in the data field
+		pin.update(buffer, ISO7816.OFFSET_CDATA,byteRead);
+		return;
 	}
 }
