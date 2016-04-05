@@ -262,4 +262,4 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		pin.update(buffer, ISO7816.OFFSET_CDATA,byteRead);
 		return;
 	}
-}
+} // End of class
