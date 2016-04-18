@@ -28,14 +28,20 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	private static final byte INS_SET_ID = (byte)0x00;
 	private static final byte INS_ISSUE = (byte)0x10;
 	private static final byte INS_PIN_SET = (byte)0x20;
+	private static final byte INS_UNISSUE = (byte)0x30;
+
 	private static final byte INS_STORE_BACKEND_PUB_KEY = (byte)0x30;
 	private static final byte INS_STORE_CARD_CERT = (byte)0x40;
 	
 	/* Issued */
 	private static final byte INS_WORK_WORK = (byte)0x70; // Place holder
 	private static final byte INS_PIN_VERIFY = (byte)0x80;
+	private static final byte INS_BALANCE_GET = (byte)0x90;
+
 
 	// Errors go here
+	private final static short SW_WRONG_CERTIFICATE_LENGTH = 0x6a00;
+	
 	private final static short SW_PIN_VERIFICATION_REQUIRED = 0x6301;
 	private final static short SW_WRONG_PIN_LENGTH = 0x6302;
 	private final static short SW_WRONG_PIN = 0x6303;
@@ -114,7 +120,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		/** The pin structure */
 		pin = new OwnerPIN(PinTryLimit, MaxPinSize);
 		/** Initial balance is zero */
-		cardBalance = (byte)0x00;
+		cardBalance = (short)0x0539;
 	    /** Logging? */
 	    // Log log = new log;
 		/** Certificates */
@@ -167,7 +173,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 				break;
 			/** Receive and store certificate */
 			case INS_STORE_CARD_CERT:
-				setCardCertificate();
+				setCardCertificate(apdu);
 				break;
 			/** Set the pin */
 			case INS_PIN_SET:
@@ -207,6 +213,12 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 			case INS_PIN_VERIFY:
 				pin_verify(apdu);
 				break;
+			case INS_UNISSUE:
+				unIssueCard();
+				break;
+			case INS_BALANCE_GET:
+				getBalance(apdu);
+				break;
 			default:
 				ISOException.throwIt(SW_INS_NOT_SUPPORTED);
 			}
@@ -214,12 +226,34 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		}
 	}
 
+	private void getBalance(APDU apdu) {
+		if ( !pin.isValidated()){ ISOException.throwIt(SW_PIN_VERIFICATION_REQUIRED); }
+		
+	    byte[] buffer = apdu.getBuffer();
+	    short le = apdu.setOutgoing();
+	  
+	    if ( le < 2 ) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+	  
+	    //informs the CAD the actual number of bytes returned
+	    apdu.setOutgoingLength((byte)2);
+	  
+	    // move the balance data into the APDU buffer
+	    // starting at the offset 0
+	    buffer[0] = (byte)(cardBalance >> 8);
+	    buffer[1] = (byte)(cardBalance & 0xFF);
+	  
+	    // send the 2-balance byte at the offset
+	    // 0 in the apdu buffer
+	    apdu.sendBytes((short)0, (short)2);
+	    return;
+	}
+
 	private void pin_verify(APDU apdu) {
 		byte[] buffer = apdu.getBuffer();
 		// retrieve the PIN data to validate.
 		byte byteRead = (byte)(apdu.setIncomingAndReceive());
 		
-		// Die if PinSize is not correct
+		// Die if PinSize is not correct (information leak?)
 		if (byteRead != MaxPinSize){
 			ISOException.throwIt(SW_WRONG_PIN_LENGTH);
 		}
@@ -233,7 +267,12 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	private void setID() {
 		// TODO Auto-generated method stub
 	}
-
+	
+	/** For debugging purposes, remove before production. */
+	private void unIssueCard() {
+		state = STATE_INIT;
+		return;
+	}
 	private void issueCard() {
 		state = STATE_ISSUED;
 		return;
@@ -243,8 +282,14 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		// TODO Auto-generated method stub
 	}
 
-	private void setCardCertificate() {
-		// TODO Auto-generated method stub
+	private void setCardCertificate(APDU apdu) {
+		byte[] buffer = apdu.getBuffer();
+		byte byteRead = (byte)(apdu.setIncomingAndReceive());
+
+		//if (byteRead != CertificateCard ){
+		//	ISOException.throwIt(SW_WRONG_CERTIFICATE_LENGTH);
+		
+		
 	}
 	
 	// Could also be done at install-time
