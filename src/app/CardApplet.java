@@ -7,6 +7,7 @@ import javacard.framework.*;
 
 
 /**
+ * 
  * @author Group 2!
  *
  * APDU Structure cheat sheet:
@@ -28,15 +29,15 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	private static final byte INS_SET_ID = (byte)0x00;
 	private static final byte INS_ISSUE = (byte)0x10;
 	private static final byte INS_PIN_SET = (byte)0x20;
-	private static final byte INS_UNISSUE = (byte)0x30;
+	private static final byte INS_UNISSUE = (byte)0x11;
 
-	private static final byte INS_STORE_BACKEND_PUB_KEY = (byte)0x30;
-	private static final byte INS_STORE_CARD_CERT = (byte)0x40;
+	private static final byte INS_STORE_BACKEND_CERT = (byte)0x40;
+	private static final byte INS_STORE_CARD_CERT = (byte)0x50;
 	
 	/* Issued */
-	private static final byte INS_WORK_WORK = (byte)0x70; // Place holder
-	private static final byte INS_PIN_VERIFY = (byte)0x80;
-	private static final byte INS_BALANCE_GET = (byte)0x90;
+	private static final byte INS_PIN_VERIFY = (byte)0x21;
+	private static final byte INS_BALANCE_GET = (byte)0x30;
+	private static final byte INS_BALANCE_SUB = (byte)0x31;
 	private static final byte INS_RECV_VERIFY_TERM_CERT = (byte)0xa0;
 
 
@@ -87,6 +88,8 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	/** Personal ID */
 	short id;
 	
+	/** The root certificate, contains the root public key which we will need for certificate validation */
+	CVCertificate certificateRoot;
 	/** Cards CVC Certificate, signed by the CA (Probably the back end) */
 	CVCertificate certificateCard;
 	/** During mutual authentication we will receive a terminal certificate */
@@ -123,10 +126,11 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		/** The pin structure */
 		pin = new OwnerPIN(PinTryLimit, MaxPinSize);
 		/** Initial balance is zero */
-		cardBalance = (short)0x0;
+		cardBalance = (short)0x1337;
 	    /** Logging? */
 	    // Log log = new log;
 		/** Certificates */
+		certificateRoot = new CVCertificate();
 		certificateCard = new CVCertificate();
 		certificateTerminal = new CVCertificate();
 	}
@@ -175,9 +179,9 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 			case INS_STORE_CARD_CERT:
 				setCardCertificate(apdu);
 				break;
-			/** During initialization we receive the back-end public key, to verify terminal certificates with */
-			case INS_STORE_BACKEND_PUB_KEY:
-				setBackEndPubKey();
+			/** During initialization we receive the back-end (r00t) certificate, to verify terminal certificates with */
+			case INS_STORE_BACKEND_CERT:
+				setBackEndCert(apdu);
 				break;
 			/** Set the pin */
 			case INS_PIN_SET:
@@ -210,10 +214,6 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		 */
 		case STATE_ISSUED:
 			switch(ins) {
-			case INS_WORK_WORK:
-				if ( !pin.isValidated()){ ISOException.throwIt(SW_PIN_VERIFICATION_REQUIRED); }
-				// else work_work();
-				break;
 			case INS_PIN_VERIFY:
 				pin_verify(apdu);
 				break;
@@ -223,8 +223,12 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 			case INS_BALANCE_GET:
 				getBalance(apdu);
 				break;
+			case INS_BALANCE_SUB:
+				subBalance(apdu);
+				break;
 			case INS_RECV_VERIFY_TERM_CERT:
 				receiveAndVerifyTermCert(apdu);
+				break;
 			default:
 				ISOException.throwIt(SW_INS_NOT_SUPPORTED);
 			}
@@ -232,9 +236,32 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		}
 	}
 
-	private void setBackEndPubKey() {
-		// TODO Auto-generated method stub
+	private void subBalance(APDU apdu) {
+		byte[] buffer = apdu.getBuffer();
+		byte byteRead = (byte)(apdu.setIncomingAndReceive());
+
+		if(byteRead != (byte) 2)
+			ISOException.throwIt ( (short) 0xabcd);
 		
+		// get the amount from the buffer
+		short s = 0;
+		s = (short) (buffer[ISO7816.OFFSET_CDATA] << 8);
+		s +=(short) (buffer[ISO7816.OFFSET_CDATA+1]);
+		if( s > cardBalance)
+			ISOException.throwIt((short) 0x1234);
+		cardBalance = (short) (cardBalance - s);
+		return;
+	}
+
+	private void setBackEndCert(APDU apdu) {
+		byte[] buffer = apdu.getBuffer();
+		short buffer_p = (short) (OFFSET_CDATA & 0xff); // fancy way to write 5
+		byte byteRead = (byte)(apdu.setIncomingAndReceive());
+		
+		/** This is the root certificate for the system" */
+        //Util.arrayCopyNonAtomic(buffer, buffer_p, certroot, (short) 0, byteRead);  // certroot = buffer;
+		certificateCard.parseCertificate(buffer, buffer_p, byteRead, true);
+		return;
 	}
 
 	/** During mutual authentication we receive a certificate, we shall
@@ -249,7 +276,8 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		/** Card certificate is signed by the "Overall System acting as CA" */
 		certificateTerminal.parseCertificate(buffer, buffer_p, byteRead, false);
 		// Somehow set the public key to be used for verification
-		//TODO
+		//certificateTerminal.setRootCertificate(certroot, (short)1); //TODO dear god
+		// Idea: store the byte[] of certificateRoot only... we might not need to parse it... ever... maybe
 		// Do the actual signature verification
 		if(!certificateTerminal.verify()){
 			ISOException.throwIt(SW_WRONG_CERTIFICATE);	
@@ -262,8 +290,8 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		
 	    byte[] buffer = apdu.getBuffer();
 	    short le = apdu.setOutgoing();
-	  
 	    if ( le < 2 ) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+	  
 	  
 	    //informs the CAD the actual number of bytes returned
 	    apdu.setOutgoingLength((byte)2);
@@ -272,7 +300,6 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	    // starting at the offset 0
 	    buffer[0] = (byte)(cardBalance >> 8);
 	    buffer[1] = (byte)(cardBalance & 0xFF);
-	  
 	    // send the 2-balance byte at the offset
 	    // 0 in the apdu buffer
 	    apdu.sendBytes((short)0, (short)2);
@@ -283,7 +310,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		byte[] buffer = apdu.getBuffer();
 		// retrieve the PIN data to validate.
 		byte byteRead = (byte)(apdu.setIncomingAndReceive());
-		
+
 		// Die if PinSize is not correct (information leak?)
 		if (byteRead != MaxPinSize){
 			ISOException.throwIt(SW_WRONG_PIN_LENGTH);
@@ -318,7 +345,9 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		byte byteRead = (byte)(apdu.setIncomingAndReceive());
 		
 		/** Card certificate is signed by the "Overall System acting as CA" */
-		certificateCard.parseCertificate(buffer, buffer_p, byteRead, false);
+		
+		//certroot = buffer;
+		certificateCard.parseCertificate(buffer, buffer_p, byteRead, true);
 	}
 	
 	// Could also be done at install-time
