@@ -40,6 +40,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	private static final byte INS_BALANCE_SUB = (byte)0x31;
 	private static final byte INS_BALANCE_INC = (byte)0x32;
 	private static final byte INS_SEND_ENC = (byte)0x41;
+	private static final byte INS_RECV_ENC = (byte)0x42;
 	private static final byte INS_RECV_VERIFY_TERM_CERT = (byte)0xa0;
 
 
@@ -64,6 +65,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	
 	/** Temporary buffer in RAM, clear on reset */
 	byte[] tmp;
+	byte[] certroot;
 	   
 	/** The applet state (INIT or ISSUED). */
 	byte state;
@@ -195,7 +197,8 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 				break;
 			/** Receive and store card certificate */
 			case INS_STORE_CARD_CERT:
-				setCardCertificate(apdu);
+                readBuffer(apdu,tmp,(short)0,lc);
+				setCardCertificate(tmp, lc);
 				break;
 			/** During initialization we receive the back-end (r00t) certificate, to verify terminal certificates with */
 			case INS_STORE_BACKEND_CERT:
@@ -254,13 +257,38 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 			case INS_SEND_ENC:
 				sendEnc(apdu);
 				break;
+			case INS_RECV_ENC:
+				recvEnc(apdu);
+				break;
 			default:
+		
 				ISOException.throwIt(SW_INS_NOT_SUPPORTED);
 			}
 			break;
 		}
 	}
 
+	private void recvEnc(APDU apdu){
+		byte[] testkey = {(byte) 0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00};
+		byte[] buffer = apdu.getBuffer();
+		byte[] testpt = new byte[16];
+		byte[] ct = new byte[16];
+		byte byteRead = (byte)(apdu.setIncomingAndReceive());
+		Util.arrayCopy(buffer, (short)ISO7816.OFFSET_CDATA, ct, (short)0,(short)byteRead);
+		
+		tripleDesKey.setKey(testkey, (short)0x00);
+		cipher = Cipher.getInstance(Cipher.ALG_DES_CBC_NOPAD, false);
+		cipher.init(tripleDesKey, Cipher.MODE_DECRYPT, new byte[]{(byte)0,(byte)0,(byte)0,(byte)0,(byte)0,(byte)0,(byte)0,(byte)0},(short)0,(short)8);
+		cipher.doFinal(ct, (short) 0, (short)16, testpt, (short) 0 );
+		
+		apdu.setOutgoing();
+	    apdu.setOutgoingLength((short)16);
+	    
+	    Util.arrayCopy(testpt, (short)0, buffer, (short)0, (short)16);
+	    apdu.sendBytes((short)0, (short)16);
+	    return;
+	}
+		
 	private void sendEnc(APDU apdu) {
 	    byte[] buffer = apdu.getBuffer();
 
@@ -328,10 +356,12 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	private void setBackEndCert(byte[] in, short lc) {
 		// we will receive ~1126 bytes of certificate, all the while copying it into the designated certroot array
 		/** This is the root certificate for the system" */
-        //Util.arrayCopyNonAtomic(in, (short)0, certroot, (short) 0, lc);  // certroot = buffer;
-		//certificateCard.parseCertificate(buffer, buffer_p, byteRead, true);
+        Util.arrayCopyNonAtomic(in, (short)0, certroot, (short) 0, lc);
+		certificateRoot.parseCertificate(in, (short)0, lc, true);
+		pubKeyBackEnd = certificateCard.currentCertPublicKey;
 		return;
 	}
+
 
 	/** During mutual authentication we receive a certificate, we shall
 	 *  verify that this certificate is signed by the CA. We can then
@@ -345,15 +375,17 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		/** Card certificate is signed by the "Overall System acting as CA" */
 		certificateTerminal.parseCertificate(buffer, buffer_p, byteRead, false);
 		// Somehow set the public key to be used for verification
-		//certificateTerminal.setRootCertificate(certroot, (short)1); //TODO dear god
+		certificateTerminal.setRootCertificate(certroot, (short)1); //TODO dear god
 		// Idea: store the byte[] of certificateRoot only... we might not need to parse it... ever... maybe
 		// Do the actual signature verification
 		if(!certificateTerminal.verify()){
 			ISOException.throwIt(SW_WRONG_CERTIFICATE);	
 		}
+		
 		return;
 	}
 
+	
 	private void getBalance(APDU apdu) {
 		if ( !pin.isValidated()){ ISOException.throwIt(SW_PIN_VERIFICATION_REQUIRED); }
 		
@@ -395,7 +427,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		// TODO Auto-generated method stub
 	}
 	
-	/** For debugging purposes, remove before production. */
+	/** For debugging purposes. */
 	private void unIssueCard() {
 		state = STATE_INIT;
 		return;
@@ -408,16 +440,14 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 
 	/** Set the cards own CVC certificate during initialization */
 	
-private void setCardCertificate(APDU apdu) {
-		byte[] buffer = apdu.getBuffer();
-		short buffer_p = (short) (OFFSET_CDATA & 0xff);
-		byte byteRead = (byte)(apdu.setIncomingAndReceive());
-		
-		/** Card certificate is signed by the "Overall System acting as CA" */
-		
+	private void setCardCertificate(byte[] in, short lc) {
+		/** This is the cards personal certificate, signed by the backend" */
+		certificateCard.parseCertificate(in, (short)0, lc, false);
+		certificateCard.setRootCertificate(certroot, (short)1);  //what does this 1 mean??
+		pubKeyCard = certificateCard.currentCertPublicKey;
+		return;
 		//certroot = buffer;
-		certificateCard.parseCertificate(buffer, buffer_p, byteRead, true);
-	}
+		}
 	
 	// Could also be done at install-time
 	/** Sets the PIN code of a card */
@@ -447,7 +477,7 @@ private void setCardCertificate(APDU apdu) {
     * @param offset offset into the destination byte array.
     * @param length number of bytes to copy.
     */
-   private void readBuffer(APDU apdu, byte[] dest, short offset, short length) {
+	private void readBuffer(APDU apdu, byte[] dest, short offset, short length) {
       byte[] buf = apdu.getBuffer();
       short readCount = apdu.setIncomingAndReceive();
       short i = 0;
@@ -459,4 +489,4 @@ private void setCardCertificate(APDU apdu) {
          Util.arrayCopy(buf,OFFSET_CDATA,dest,offset,readCount);
       }
    }
-} // End of class
+	} // End of class
