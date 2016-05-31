@@ -50,6 +50,8 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	private static final byte INS_RECV_ENC = (byte) 0x42;
 	private static final byte INS_SET_TERM_PUB_EXP = (byte) 0x43;
 	private static final byte INS_SET_TERM_PUB_MOD = (byte) 0x44;
+	private static final byte INS_SEND_SK = (byte) 0x45;
+
 	private static final byte INS_RECV_VERIFY_TERM_CERT = (byte) 0xa0;
 
 	// TODO This does leak information about where in the protocol things fail,
@@ -92,7 +94,10 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	/** Terminal key for encryption */
 	RSAPublicKey pubKeyTerminal;
 
-	/** Cipher for encryption and decryption. */
+	/** RSA cipher for communication with terminal */
+	Cipher cipherTerminal;
+	
+	/** DES Cipher for encryption and decryption. */
 	Cipher cipher;
 
 	/** Pincode */
@@ -101,7 +106,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 	 * maximum number of incorrect tries before the PIN is blocked TODO How
 	 * many?
 	 */
-	final static byte PinTryLimit = (byte) 0x7f; // Careful this is a signed
+	final static byte PinTryLimit = (byte) 0x03; // Careful this is a signed
 													// value and negative will
 													// prevent the applet from
 													// installing
@@ -147,7 +152,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		/** Transient array in RAM to use for sensitive data */
 		mutauthstate = JCSystem.makeTransientByteArray((short) 1,
 				JCSystem.CLEAR_ON_DESELECT);
-		tmp = JCSystem.makeTransientByteArray((short) 17,
+		tmp = JCSystem.makeTransientByteArray((short) 24,
 				JCSystem.CLEAR_ON_DESELECT);
 		/** Temporary storage for receiving keys and the like */
 		work = JCSystem.makeTransientByteArray((short) 256,
@@ -183,6 +188,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		 */
 		pubKeyTerminal = (RSAPublicKey) KeyBuilder.buildKey(
 				KeyBuilder.TYPE_RSA_PUBLIC, KeyBuilder.LENGTH_RSA_1024, false);
+		cipherTerminal = Cipher.getInstance(Cipher.ALG_RSA_PKCS1,false);
 		/** Owner unique code, managed by the backend which will issue IDs */
 		byte[] id = new byte[8];
 		/** The revocation list */
@@ -333,6 +339,19 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 				}
 				else ISOException.throwIt(SW_WRONG_ORDER);
 				break;
+			case INS_SEND_SK:
+				byte[] buf = apdu.getBuffer();
+				readBuffer(apdu,work,(short)0,lc);
+				RandomData rng = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
+				rng.generateData(tmp,(short)0,(short)24);
+				tripleDesKey.setKey(tmp, (short) 0);
+				apdu.setOutgoing();
+				cipherTerminal.init(pubKeyTerminal,Cipher.MODE_ENCRYPT);
+				outLength = cipher.doFinal(tmp,(short)0,lc,buf,(short)0);
+				// TODO Also send our public key encrypted with the deskey and sign this stuff
+				apdu.setOutgoingLength(outLength);
+				apdu.sendBytes((short)0,outLength);
+				break;
 			case INS_PIN_VERIFY:
 				pin_verify(apdu);
 				break;
@@ -365,6 +384,11 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 		}
 	}
 
+	private void sendSk(APDU apdu) {
+
+		return;
+	}
+
 	/**
 	 * Receive an encrypted APDU data, decrpyt it with the Key and pass back the
 	 * decrypted bytes
@@ -379,6 +403,7 @@ public class CardApplet extends javacard.framework.Applet implements ISO7816 {
 				(byte) 0x00, (byte) 0x00, (byte) 0x00, (byte) 0x00,
 				(byte) 0x00, (byte) 0x00, (byte) 0x00, (byte) 0x00 };
 		tripleDesKey.setKey(testkey, (short) 0x00);
+		// Using padding always gives errors
 		cipher = Cipher.getInstance(Cipher.ALG_DES_CBC_NOPAD, true);
 		cipher.init(tripleDesKey, Cipher.MODE_DECRYPT, new byte[] { (byte) 0,
 				(byte) 0, (byte) 0, (byte) 0, (byte) 0, (byte) 0, (byte) 0,
